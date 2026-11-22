@@ -19,6 +19,11 @@
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; }
     code { background: #eef2f6; padding: 2px 6px; border-radius: 4px; }
     .err { color: #b91c1c; font-weight: 600; }
+    .st { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; background: #e5e7eb; color: #374151; }
+    .st-running { background: #dbeafe; color: #1d4ed8; }
+    .st-stuck { background: #fee2e2; color: #b91c1c; }
+    .st-completed { background: #dcfce7; color: #15803d; }
+    .st-timeout { background: #fef3c7; color: #b45309; }
   </style>
 </head>
 <body>
@@ -79,9 +84,13 @@
     <h2>最近演练</h2>
     {% if recent %}
     <table>
-      <tr><th>run id</th><th>链接</th></tr>
-      {% for rid in recent %}
-      <tr><td><code>{{ rid }}</code></td><td><a href="/runs/{{ rid }}">查看进度与结论</a></td></tr>
+      <tr><th>run id</th><th>状态</th><th>链接</th></tr>
+      {% for item in recent %}
+      <tr>
+        <td><code>{{ item.run_id }}</code></td>
+        <td><span class="st st-{{ item.status }}">{{ status_text.get(item.status, item.status) }}</span></td>
+        <td><a href="/runs/{{ item.run_id }}">查看进度与结论</a></td>
+      </tr>
       {% endfor %}
     </table>
     {% else %}

@@ -22,10 +22,6 @@ import signal
 import sys
 import time
 
-import torch
-import torch.distributed as dist
-import torch.nn as nn
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gloo 梯度同步演练 rank")
@@ -92,6 +88,21 @@ def main() -> int:
         pause_before_step=args.pause_before_step,
         master_port=os.environ.get("MASTER_PORT"),
     )
+
+    # 依赖在事件日志建立之后再导入：缺 torch / 装错版本也会留下可回查的证据
+    try:
+        import torch
+        import torch.distributed as dist
+        import torch.nn as nn
+    except Exception as exc:  # noqa: BLE001
+        events.emit(
+            "sync_error",
+            error_type=type(exc).__name__,
+            error=f"无法导入 torch：{exc}"[:500],
+        )
+        events.emit("exit", code=1, reason="import_error")
+        events.close()
+        return 1
 
     # 小模型：4 维输入 -> 2 维输出的线性层，CPU 上即可运行
     torch.manual_seed(20261122 + rank)

@@ -14,7 +14,8 @@
     .stuck { background: #fee2e2; color: #b91c1c; }
     .completed { background: #dcfce7; color: #15803d; }
     .timeout { background: #fef3c7; color: #b45309; }
-    .error, .stopped { background: #e5e7eb; color: #374151; }
+    .error, .stopped, .interrupted { background: #e5e7eb; color: #374151; }
+    .finalizing { background: #fef3c7; color: #b45309; }
     .ranks { display: flex; gap: 18px; flex-wrap: wrap; }
     .rank { flex: 1; min-width: 320px; border: 1px solid #d7dde5; border-radius: 8px; padding: 14px 16px; }
     .rank h3 { margin: 0 0 8px; }
@@ -73,7 +74,8 @@
 const RUN_ID = {{ run_id|tojson }};
 const STATUS_TEXT = {
   running: '运行中', stuck: '已确认卡点', completed: '正常跑完',
-  timeout: '超时 · 原因待查', error: '异常退出', stopped: '已手动停止'
+  timeout: '超时 · 原因待查', error: '异常退出', stopped: '已手动停止',
+  interrupted: '服务中断', finalizing: '收尾中（回收进程）'
 };
 let timer = null;
 let lastParams = null;
@@ -86,14 +88,19 @@ async function refresh() {
   } catch (e) { return; }
   if (!resp.ok) { document.getElementById('statusBadge').textContent = data.error || '加载失败'; return; }
   lastParams = data.params;
+  const batches = (data.params && data.params.batches) || [];
+  const timeoutText = data.timeout_s === null || data.timeout_s === undefined ? '未记录' : data.timeout_s + 's';
+  const pauseText = data.params && data.params.pause_rank !== null && data.params.pause_rank !== undefined
+    ? ', rank' + data.params.pause_rank + ' 第 ' + data.params.pause_before_step + ' 步前暂停' : '';
   const badge = document.getElementById('statusBadge');
-  badge.textContent = STATUS_TEXT[data.status] || data.status;
-  badge.className = 'badge ' + data.status;
+  const finishing = data.finalizing === true && data.status === 'running';
+  badge.textContent = finishing ? STATUS_TEXT.finalizing : (STATUS_TEXT[data.status] || data.status);
+  badge.className = 'badge ' + (finishing ? 'finalizing' : data.status);
   const elapsed = data.finished_at ? (data.finished_at - data.created_at) : (data.now - data.created_at);
   document.getElementById('elapsed').textContent =
-    '已用时 ' + elapsed.toFixed(1) + 's / 超时 ' + data.timeout_s + 's · 配置：rank0=' +
-    data.params.batches[0] + ' 批, rank1=' + data.params.batches[1] + ' 批' +
-    (data.params.pause_rank !== null ? ', rank' + data.params.pause_rank + ' 第 ' + data.params.pause_before_step + ' 步前暂停' : '');
+    '已用时 ' + Math.max(0, elapsed).toFixed(1) + 's / 超时 ' + timeoutText + ' · 配置：rank0=' +
+    (batches[0] ?? '?') + ' 批, rank1=' + (batches[1] ?? '?') + ' 批' + pauseText +
+    (finishing ? ' · 正在回收两个 rank，收尾期间的进度仍可查看' : '');
 
   for (const r of [0, 1]) {
     const s = data.ranks[String(r)];
@@ -108,8 +115,9 @@ async function refresh() {
   }
 
   const running = data.status === 'running';
-  document.getElementById('resumeBtn').disabled = !running;
-  document.getElementById('stopBtn').disabled = !running;
+  const canAct = running && !finishing;
+  document.getElementById('resumeBtn').disabled = !canAct;
+  document.getElementById('stopBtn').disabled = !canAct;
 
   const card = document.getElementById('conclusionCard');
   if (data.conclusion) {
@@ -124,9 +132,15 @@ async function refresh() {
         ' 步；已跑完 rank：rank' + data.conclusion.finished_rank + '（' + data.conclusion.finished_steps + ' 步）；证据：' +
         (data.conclusion.evidence_type === 'observed_block' ? '当场观测到阻塞' : '对端关闭后由事件流还原') + '<br>';
     }
-    if (data.reaped) meta += '进程回收：' + JSON.stringify(data.reaped);
+    if (data.reaped) {
+      meta += '进程回收：' + JSON.stringify(data.reaped);
+    } else if (data.status !== 'running') {
+      meta += '进程回收：无记录（未走到正常收尾，进程可能已随容器退出）';
+    }
+    if (data.publish_error) meta += '<br>终态写盘失败：' + data.publish_error;
     document.getElementById('conMeta').innerHTML = meta;
-    if (!running) {
+    // 收尾期间保留轮询，直到拿到带回收记录的终态
+    if (data.finalized) {
       if (timer) { clearInterval(timer); timer = null; }
       renderRerun(data.params);
     }
@@ -136,6 +150,8 @@ async function refresh() {
 function renderRerun(params) {
   const box = document.getElementById('rerunBox');
   if (box.dataset.done) return;
+  const batches = (params && params.batches) || [];
+  if (!batches[0] || !batches[1] || !params.timeout_s) return;  // 残缺历史记录不提供重跑
   box.dataset.done = '1';
   box.innerHTML =
     '<h2 style="font-size:15px;">用相同参数重跑（也可回首页修改参数）</h2>' +

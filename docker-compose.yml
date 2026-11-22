@@ -7,6 +7,10 @@ services:
       - "8080:8080"
     # 两个 CPU rank 是 Flask 的子进程，通过容器回环网络做 Gloo 通信
     shm_size: 512m
+    # 用 tini 作 PID 1，保证 SIGTERM 能转到 Flask、僵尸进程被回收
+    init: true
+    # SIGTERM 后留足收尾时间：Flask 先回收两个 rank、原子发布终态再退出
+    stop_grace_period: 30s
     volumes:
       - drill-runs:/data/runs
     restart: "no"
