@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>演练 {{ run_id }}</title>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #1f2933; }
+    header { background: #1f3b57; color: #fff; padding: 16px 28px; }
+    main { max-width: 1000px; margin: 22px auto; padding: 0 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    .badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 14px; }
+    .running { background: #dbeafe; color: #1d4ed8; }
+    .stuck { background: #fee2e2; color: #b91c1c; }
+    .completed { background: #dcfce7; color: #15803d; }
+    .timeout { background: #fef3c7; color: #b45309; }
+    .error, .stopped { background: #e5e7eb; color: #374151; }
+    .ranks { display: flex; gap: 18px; flex-wrap: wrap; }
+    .rank { flex: 1; min-width: 320px; border: 1px solid #d7dde5; border-radius: 8px; padding: 14px 16px; }
+    .rank h3 { margin: 0 0 8px; }
+    .steps { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+    .kv { font-size: 13px; color: #4b5563; line-height: 1.7; }
+    .conclusion { border-left: 5px solid #2563eb; padding: 12px 16px; background: #f8fafc; border-radius: 6px; }
+    .conclusion.stuck-box { border-left-color: #b91c1c; }
+    .conclusion.timeout-box { border-left-color: #b45309; }
+    button { border: 0; border-radius: 6px; padding: 9px 18px; font-size: 14px; cursor: pointer; margin-right: 10px; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-warn { background: #d97706; color: #fff; }
+    .btn-gray { background: #6b7280; color: #fff; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    a { color: #2563eb; }
+    code { background: #eef2f6; padding: 2px 6px; border-radius: 4px; }
+    .mono { font-family: ui-monospace, monospace; font-size: 12px; max-height: 180px; overflow: auto; background: #0f172a; color: #d1e0ff; padding: 10px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+<header>
+  <div style="font-size:13px;opacity:.8;"><a href="/" style="color:#cfe0ff;">← 返回发起页</a></div>
+  <h1 style="margin:6px 0 0;font-size:20px;">演练 <span id="runId">{{ run_id }}</span></h1>
+</header>
+<main>
+  <div class="card">
+    <span class="badge running" id="statusBadge">连接中…</span>
+    <span class="kv" id="elapsed" style="margin-left:12px;"></span>
+    <div id="actions" style="margin-top:14px;">
+      <button class="btn-warn" id="resumeBtn" onclick="doAction('resume')">放行暂停的 rank</button>
+      <button class="btn-gray" id="stopBtn" onclick="doAction('stop')">停止并回收进程</button>
+    </div>
+  </div>
+
+  <div class="card" id="conclusionCard" style="display:none;">
+    <h2>演练结论（进程回收后、基于本轮已落盘进度给出）</h2>
+    <div class="conclusion" id="conclusionBox">
+      <strong id="conTitle"></strong>
+      <p id="conDetail" style="margin:8px 0 0;line-height:1.7;"></p>
+      <div id="conMeta" class="kv" style="margin-top:8px;"></div>
+    </div>
+    <div id="rerunBox" style="margin-top:16px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>两侧实际同步进度（每秒刷新，直接读事件文件）</h2>
+    <div class="ranks">
+      <div class="rank" id="rank0box"><h3>rank0</h3><div class="kv" id="rank0kv"></div>
+        <div class="steps" id="rank0steps"></div><div class="mono" id="rank0last" style="margin-top:8px;"></div></div>
+      <div class="rank" id="rank1box"><h3>rank1</h3><div class="kv" id="rank1kv"></div>
+        <div class="steps" id="rank1steps"></div><div class="mono" id="rank1last" style="margin-top:8px;"></div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const RUN_ID = {{ run_id|tojson }};
+const STATUS_TEXT = {
+  running: '运行中', stuck: '已确认卡点', completed: '正常跑完',
+  timeout: '超时 · 原因待查', error: '异常退出', stopped: '已手动停止'
+};
+let timer = null;
+let lastParams = null;
+
+async function refresh() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/runs/' + RUN_ID);
+    data = await resp.json();
+  } catch (e) { return; }
+  if (!resp.ok) { document.getElementById('statusBadge').textContent = data.error || '加载失败'; return; }
+  lastParams = data.params;
+  const badge = document.getElementById('statusBadge');
+  badge.textContent = STATUS_TEXT[data.status] || data.status;
+  badge.className = 'badge ' + data.status;
+  const elapsed = data.finished_at ? (data.finished_at - data.created_at) : (data.now - data.created_at);
+  document.getElementById('elapsed').textContent =
+    '已用时 ' + elapsed.toFixed(1) + 's / 超时 ' + data.timeout_s + 's · 配置：rank0=' +
+    data.params.batches[0] + ' 批, rank1=' + data.params.batches[1] + ' 批' +
+    (data.params.pause_rank !== null ? ', rank' + data.params.pause_rank + ' 第 ' + data.params.pause_before_step + ' 步前暂停' : '');
+
+  for (const r of [0, 1]) {
+    const s = data.ranks[String(r)];
+    document.getElementById('rank' + r + 'kv').innerHTML =
+      'PID ' + (s.pid ?? '-') + ' · ' + (s.alive ? '进程存活' : '进程已退出(code=' + s.exit_code + ')') +
+      '<br>当前状态：<b>' + s.state + '</b>';
+    document.getElementById('rank' + r + 'steps').innerHTML =
+      '<b>已进入同步步：</b>[' + (s.entered.join(', ') || '—') + ']<br>' +
+      '<b>已完成同步步：</b>[' + (s.completed.join(', ') || '—') + ']';
+    document.getElementById('rank' + r + 'last').textContent =
+      '最后事件：' + (s.last_event ? JSON.stringify(s.last_event) : '暂无');
+  }
+
+  const running = data.status === 'running';
+  document.getElementById('resumeBtn').disabled = !running;
+  document.getElementById('stopBtn').disabled = !running;
+
+  const card = document.getElementById('conclusionCard');
+  if (data.conclusion) {
+    card.style.display = 'block';
+    const box = document.getElementById('conclusionBox');
+    box.className = 'conclusion ' + (data.status === 'stuck' ? 'stuck-box' : data.status === 'timeout' ? 'timeout-box' : '');
+    document.getElementById('conTitle').textContent = data.conclusion.title;
+    document.getElementById('conDetail').textContent = data.conclusion.detail || '';
+    let meta = '';
+    if (data.conclusion.stuck_rank !== undefined) {
+      meta += '卡住 rank：rank' + data.conclusion.stuck_rank + '；卡住步：第 ' + data.conclusion.blocked_step +
+        ' 步；已跑完 rank：rank' + data.conclusion.finished_rank + '（' + data.conclusion.finished_steps + ' 步）；证据：' +
+        (data.conclusion.evidence_type === 'observed_block' ? '当场观测到阻塞' : '对端关闭后由事件流还原') + '<br>';
+    }
+    if (data.reaped) meta += '进程回收：' + JSON.stringify(data.reaped);
+    document.getElementById('conMeta').innerHTML = meta;
+    if (!running) {
+      if (timer) { clearInterval(timer); timer = null; }
+      renderRerun(data.params);
+    }
+  }
+}
+
+function renderRerun(params) {
+  const box = document.getElementById('rerunBox');
+  if (box.dataset.done) return;
+  box.dataset.done = '1';
+  box.innerHTML =
+    '<h2 style="font-size:15px;">用相同参数重跑（也可回首页修改参数）</h2>' +
+    '<form id="rerunForm">' +
+    '<input type="hidden" name="batches0" value="' + params.batches[0] + '">' +
+    '<input type="hidden" name="batches1" value="' + params.batches[1] + '">' +
+    '<input type="hidden" name="pause_rank" value="' + (params.pause_rank ?? '') + '">' +
+    '<input type="hidden" name="pause_before_step" value="' + (params.pause_before_step ?? '') + '">' +
+    '<input type="hidden" name="timeout_s" value="' + params.timeout_s + '">' +
+    '<button class="btn-primary" type="submit">重新发起一轮</button></form>';
+  box.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const resp = await fetch('/api/runs', { method: 'POST', body: new URLSearchParams(new FormData(e.target)) });
+    const body = await resp.json();
+    if (!resp.ok) { alert(body.error || '重跑失败'); return; }
+    location.href = '/runs/' + body.run_id;
+  });
+}
+
+async function doAction(kind) {
+  const resp = await fetch('/api/runs/' + RUN_ID + '/' + kind, { method: 'POST' });
+  const body = await resp.json();
+  if (!resp.ok) alert(body.error || '操作失败');
+}
+
+refresh();
+timer = setInterval(refresh, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# CPU 版 PyTorch（Gloo 后端随 wheel 自带），Flask 提供排障网页
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+flask==3.1.3

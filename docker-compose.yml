@@ -1,0 +1,15 @@
+services:
+  gloo-drill:
+    build: .
+    image: gloo-sync-drill:latest
+    container_name: gloo-sync-drill
+    ports:
+      - "8080:8080"
+    # 两个 CPU rank 是 Flask 的子进程，通过容器回环网络做 Gloo 通信
+    shm_size: 512m
+    volumes:
+      - drill-runs:/data/runs
+    restart: "no"
+
+volumes:
+  drill-runs:

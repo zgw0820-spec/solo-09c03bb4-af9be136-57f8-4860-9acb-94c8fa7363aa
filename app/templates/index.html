@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Gloo 梯度同步卡住演练</title>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #1f2933; }
+    header { background: #1f3b57; color: #fff; padding: 18px 28px; }
+    main { max-width: 980px; margin: 24px auto; padding: 0 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 22px 26px; margin-bottom: 22px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    h2 { margin-top: 0; font-size: 18px; }
+    label { display: block; font-weight: 600; margin: 12px 0 4px; }
+    input, select { padding: 8px 10px; border: 1px solid #b6c2cf; border-radius: 6px; width: 220px; font-size: 14px; }
+    .row { display: flex; gap: 28px; flex-wrap: wrap; }
+    button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 15px; cursor: pointer; margin-top: 18px; }
+    button:hover { background: #1d4ed8; }
+    .hint { color: #6b7280; font-size: 13px; margin-top: 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; }
+    code { background: #eef2f6; padding: 2px 6px; border-radius: 4px; }
+    .err { color: #b91c1c; font-weight: 600; }
+  </style>
+</head>
+<body>
+<header>
+  <h1 style="margin:0;font-size:22px;">Gloo 梯度同步卡住演练台</h1>
+  <div style="opacity:.85;margin-top:4px;">复现分片调整后“一侧跑完、另一侧卡在下一步梯度同步”的场景（2 个 CPU rank · PyTorch Gloo）</div>
+</header>
+<main>
+  {% if current %}
+  <div class="card">
+    <h2>当前有演练正在运行</h2>
+    <p>run id：<code>{{ current.run_id }}</code></p>
+    <a href="/runs/{{ current.run_id }}"><button type="button">前往实时查看</button></a>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>发起一轮演练</h2>
+    <form method="post" action="/api/runs" id="startForm">
+      <div class="row">
+        <div>
+          <label for="b0">rank0 样本批数</label>
+          <input id="b0" name="batches0" type="number" min="1" max="1000" value="2" required>
+          <div class="hint">批数即该 rank 要跑的训练/同步步数</div>
+        </div>
+        <div>
+          <label for="b1">rank1 样本批数</label>
+          <input id="b1" name="batches1" type="number" min="1" max="1000" value="4" required>
+          <div class="hint">两侧批数不同即可复现分片不均的卡点</div>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="pr">暂停侧（可选）</label>
+          <select id="pr" name="pause_rank">
+            <option value="">不暂停</option>
+            <option value="0">rank0</option>
+            <option value="1">rank1</option>
+          </select>
+          <div class="hint">让一侧在指定步进入同步前暂停</div>
+        </div>
+        <div>
+          <label for="ps">暂停步 N（进入第 N 步同步前暂停）</label>
+          <input id="ps" name="pause_before_step" type="number" min="1" max="1000" placeholder="如 3">
+        </div>
+        <div>
+          <label for="to">演练超时（秒）</label>
+          <input id="to" name="timeout_s" type="number" min="3" max="600" value="30">
+          <div class="hint">超时仍证据不足时结论为“原因待查”</div>
+        </div>
+      </div>
+      <button type="submit">启动演练</button>
+      <p class="err" id="formErr"></p>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>最近演练</h2>
+    {% if recent %}
+    <table>
+      <tr><th>run id</th><th>链接</th></tr>
+      {% for rid in recent %}
+      <tr><td><code>{{ rid }}</code></td><td><a href="/runs/{{ rid }}">查看进度与结论</a></td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="hint">暂无历史演练。</p>
+    {% endif %}
+  </div>
+</main>
+<script>
+document.getElementById('startForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new URLSearchParams(new FormData(e.target));
+  const resp = await fetch('/api/runs', { method: 'POST', body: data });
+  const body = await resp.json();
+  if (!resp.ok) { document.getElementById('formErr').textContent = body.error || '启动失败'; return; }
+  location.href = '/runs/' + body.run_id;
+});
+</script>
+</body>
+</html>
